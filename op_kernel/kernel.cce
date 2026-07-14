@@ -1,0 +1,26 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+#ifndef TOTAL_COUNT
+#define TOTAL_COUNT 256
+#endif
+
+// Keep this symbol name in sync with KERNEL_NAME in run_test.py or --kernel-name.
+// Default ABI: foo_add(A, B, C), where A is output and B/C are inputs.
+__simt_vf__ __aicore__ LAUNCH_BOUND(256) inline
+void callee(__gm__ int *A, __gm__ int *B, __gm__ int *C)
+{
+    for (int tid = __cce_simt_get_TID_X(); tid < TOTAL_COUNT;
+         tid += __cce_simt_get_BLOCK_DIM_X()) {
+        A[tid] = B[tid] + C[tid];
+    }
+}
+
+extern "C" __global__ __aicore__
+void foo_add(__gm__ int *A, __gm__ int *B, __gm__ int *C)
+{
+    cce::async_invoke<callee>(cce::dim3{256, 1, 1}, A, B, C);
+}

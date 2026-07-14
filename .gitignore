@@ -1,0 +1,7 @@
+result/
+build/
+*.o
+*.dump
+*.bin
+*.log
+__pycache__/
