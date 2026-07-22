@@ -1,0 +1,34 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+#ifndef TOTAL_COUNT
+#define TOTAL_COUNT 256
+#endif
+
+// Example with four inputs and two outputs. Declaration order is ABI order.
+// MB_KERNEL multi_io
+// MB_TENSOR output Sum int32 TOTAL_COUNT
+// MB_TENSOR output Product int32 TOTAL_COUNT
+// MB_TENSOR input X0 int32 TOTAL_COUNT
+// MB_TENSOR input X1 int32 TOTAL_COUNT
+// MB_TENSOR input X2 int32 TOTAL_COUNT
+// MB_TENSOR input X3 int32 TOTAL_COUNT
+
+__simt_vf__ __aicore__ LAUNCH_BOUND(256) inline
+void callee(__gm__ int* sum, __gm__ int* product, __gm__ int* x0,
+            __gm__ int* x1, __gm__ int* x2, __gm__ int* x3)
+{
+    const int tid = __cce_simt_get_TID_X();
+    sum[tid] = x0[tid] + x1[tid];
+    product[tid] = x2[tid] * x3[tid];
+}
+
+extern "C" __global__ __aicore__
+void multi_io(__gm__ int* sum, __gm__ int* product, __gm__ int* x0,
+              __gm__ int* x1, __gm__ int* x2, __gm__ int* x3)
+{
+    cce::async_invoke<callee>(cce::dim3{256, 1, 1}, sum, product, x0, x1, x2, x3);
+}

@@ -8,15 +8,17 @@
 #define TOTAL_COUNT 256
 #endif
 
-// Keep this symbol name in sync with KERNEL_NAME in run_test.py or --kernel-name.
-// Default ABI: foo_add(A, B, C), where A is output and B/C are inputs.
+// The declaration order must match the kernel function parameter order.
+// MB_KERNEL foo_add
+// MB_TENSOR output A int32 TOTAL_COUNT
+// MB_TENSOR input B int32 TOTAL_COUNT
+// MB_TENSOR input C int32 TOTAL_COUNT
+
 __simt_vf__ __aicore__ LAUNCH_BOUND(256) inline
 void callee(__gm__ int *A, __gm__ int *B, __gm__ int *C)
 {
-    for (int tid = __cce_simt_get_TID_X(); tid < TOTAL_COUNT;
-         tid += __cce_simt_get_BLOCK_DIM_X()) {
-        A[tid] = B[tid] + C[tid];
-    }
+    int tid = __cce_simt_get_TID_X();
+    A[tid] = B[tid] + C[tid];
 }
 
 extern "C" __global__ __aicore__

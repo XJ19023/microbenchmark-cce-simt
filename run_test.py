@@ -3,14 +3,84 @@ import argparse
 import datetime as dt
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+SUPPORTED_TENSOR_DTYPES = {
+    "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64",
+    "fp16", "bf16", "fp32", "float32", "fp64", "float64",
+}
+
+
+@dataclass(frozen=True)
+class TensorSpec:
+    direction: str
+    name: str
+    dtype: str
+    elements: int
+
+
+@dataclass(frozen=True)
+class KernelManifest:
+    kernel_name: str
+    tensors: tuple[TensorSpec, ...]
+
+
+def parse_kernel_manifest(kernel_path: Path, total_count: int) -> KernelManifest | None:
+    """Parse MB_KERNEL/MB_TENSOR declarations embedded in a CCE source file."""
+    text = kernel_path.read_text(encoding="utf-8")
+    kernel_matches = re.findall(r"^\s*//\s*MB_KERNEL\s+([A-Za-z_]\w*)\s*$", text, re.MULTILINE)
+    tensor_matches = re.findall(
+        r"^\s*//\s*MB_TENSOR\s+(input|output|inout)\s+([A-Za-z_]\w*)\s+"
+        r"([A-Za-z0-9_]+)\s+([A-Za-z0-9_xX]+)\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if not kernel_matches and not tensor_matches:
+        return None
+    if len(kernel_matches) != 1:
+        raise RuntimeError("generic mode requires exactly one '// MB_KERNEL <symbol>' declaration")
+    if not tensor_matches:
+        raise RuntimeError("generic mode requires at least one '// MB_TENSOR ...' declaration")
+
+    tensors = []
+    names = set()
+    for direction, name, dtype, shape in tensor_matches:
+        dtype = {"float32": "fp32", "float64": "fp64"}.get(dtype, dtype)
+        if dtype not in SUPPORTED_TENSOR_DTYPES:
+            supported = ", ".join(sorted(SUPPORTED_TENSOR_DTYPES))
+            raise RuntimeError(f"unsupported dtype '{dtype}' in MB_TENSOR; supported: {supported}")
+        if name in names:
+            raise RuntimeError(f"duplicate MB_TENSOR name: {name}")
+        names.add(name)
+
+        if shape == "TOTAL_COUNT":
+            elements = total_count
+        else:
+            dims = re.split(r"[xX]", shape)
+            if not dims or any(not dim.isdigit() or int(dim) <= 0 for dim in dims):
+                raise RuntimeError(
+                    f"invalid shape '{shape}' for tensor {name}; use a positive count, e.g. 256 or 8x1024"
+                )
+            elements = 1
+            for dim in dims:
+                elements *= int(dim)
+        tensors.append(TensorSpec(direction, name, dtype, elements))
+
+    return KernelManifest(kernel_matches[0], tuple(tensors))
+
+
+def write_tensor_spec(manifest: KernelManifest, path: Path) -> None:
+    lines = [f"{item.direction}\t{item.name}\t{item.dtype}\t{item.elements}\n" for item in manifest.tensors]
+    path.write_text("".join(lines), encoding="utf-8")
 
 
 def default_cann_home() -> str:
@@ -141,8 +211,10 @@ export ASCEND_CANN_PACKAGE_PATH={quote(cann_home)}
     return kernel_bin
 
 
-def compile_runner(args, cann_home: Path, arch: str, build_dir: Path, log_path: Path) -> Path:
-    runner_src = REPO_ROOT / "runner" / "native_runner.cpp"
+def compile_runner(args, cann_home: Path, arch: str, build_dir: Path, log_path: Path,
+                   generic_mode: bool) -> Path:
+    runner_name = "generic_runner.cpp" if generic_mode else "native_runner.cpp"
+    runner_src = REPO_ROOT / "runner" / runner_name
     runner_bin = build_dir / "native_cce_runner"
     host_inc = cann_home / arch / "include"
     pkg_inc = cann_home / arch / "pkg_inc"
@@ -233,12 +305,14 @@ def copy_camodel_config(cann_home: Path, arch: str, args, run_dir: Path) -> None
     print("[WARN] 1982_cloud_config.toml not found; set CAMODEL_CONFIG_TOML if core_wrapper needs it")
 
 
-def run_kernel(args, cann_home: Path, arch: str, out_dir: Path, kernel_bin: Path, runner_bin: Path, log_path: Path) -> None:
+def run_kernel(args, cann_home: Path, arch: str, out_dir: Path, kernel_bin: Path, runner_bin: Path,
+               log_path: Path, tensor_spec: Path | None) -> None:
     run_dir = out_dir / "run"
     msprof_dir = out_dir / "msprof"
     msprof_work_dir = Path(tempfile.mkdtemp(prefix="cce_msprof_"))
     run_dir.mkdir(parents=True, exist_ok=True)
     msprof_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "log_ca").mkdir(parents=True, exist_ok=True)
     for item in (out_dir, run_dir, msprof_dir, msprof_work_dir):
         try:
             item.chmod(0o700)
@@ -246,14 +320,22 @@ def run_kernel(args, cann_home: Path, arch: str, out_dir: Path, kernel_bin: Path
             pass
     shutil.copy2(kernel_bin, run_dir / kernel_bin.name)
     shutil.copy2(runner_bin, run_dir / runner_bin.name)
+    if tensor_spec is not None:
+        shutil.copy2(tensor_spec, run_dir / tensor_spec.name)
     os.chmod(run_dir / runner_bin.name, 0o755)
     copy_camodel_config(cann_home, arch, args, run_dir)
 
     env_script = runtime_env_script(cann_home, arch, args, run_dir)
-    app = (
-        f"./{runner_bin.name} ./{kernel_bin.name} {args.kernel_name} {args.dtype} "
-        f"{args.total_count} {args.block_dim} {args.local_memory_size} {args.golden} {args.atol} {args.rtol}"
-    )
+    if tensor_spec is not None:
+        app = (
+            f"./{runner_bin.name} ./{kernel_bin.name} {args.kernel_name} ./{tensor_spec.name} "
+            f"{args.block_dim} {args.local_memory_size}"
+        )
+    else:
+        app = (
+            f"./{runner_bin.name} ./{kernel_bin.name} {args.kernel_name} {args.dtype} "
+            f"{args.total_count} {args.block_dim} {args.local_memory_size} {args.golden} {args.atol} {args.rtol}"
+        )
     if args.no_msprof:
         command = f"""
 set -e
@@ -270,7 +352,6 @@ msprof op simulator \
   --soc-version={quote(args.soc_version)} \
   --kernel-name={quote(args.kernel_name)} \
   --timeout={args.timeout} \
-  --dump=on \
   --output={quote(msprof_work_dir)} \
   {app}
 """
@@ -357,14 +438,30 @@ def main() -> int:
     print(f"ARCH={args.arch}")
     print(f"OUTPUT={out_dir}")
 
+    kernel_path = args.kernel.expanduser().resolve()
+    require_file(kernel_path, "CCE kernel")
+    manifest = parse_kernel_manifest(kernel_path, args.total_count)
+    tensor_spec = None
+    if manifest is not None:
+        args.kernel_name = manifest.kernel_name
+        tensor_spec = build_dir / "kernel_tensors.tsv"
+        write_tensor_spec(manifest, tensor_spec)
+        print(f"[INFO] generic tensor mode: kernel={manifest.kernel_name}, args={len(manifest.tensors)}")
+        for index, item in enumerate(manifest.tensors):
+            print(f"  arg[{index}] {item.direction} {item.name}: {item.dtype}[{item.elements}]")
+        if args.golden != "none":
+            print("[INFO] generic tensor mode does not run a built-in golden check")
+    else:
+        print("[INFO] legacy three-tensor mode (no MB_KERNEL/MB_TENSOR declarations found)")
+
     kernel_bin = compile_kernel(args, cann_home, args.arch, build_dir, log_path)
-    runner_bin = compile_runner(args, cann_home, args.arch, build_dir, log_path)
+    runner_bin = compile_runner(args, cann_home, args.arch, build_dir, log_path, manifest is not None)
     if args.compile_only:
         print(f"[INFO] kernel_bin={kernel_bin}")
         print(f"[INFO] runner_bin={runner_bin}")
         summarize(out_dir)
         return 0
-    run_kernel(args, cann_home, args.arch, out_dir, kernel_bin, runner_bin, log_path)
+    run_kernel(args, cann_home, args.arch, out_dir, kernel_bin, runner_bin, log_path, tensor_spec)
     summarize(out_dir)
     return 0
 

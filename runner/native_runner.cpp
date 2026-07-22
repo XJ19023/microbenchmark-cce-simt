@@ -219,8 +219,9 @@ int RunTyped(const std::string& kernelBinPath, const std::string& kernelName, si
             RT_CHECK(rtKernelLaunch(stubFunc, static_cast<uint32_t>(blockDim), args, sizeof(args), nullptr, stream));
         } else {
             aclrtLaunchKernelAttr attr {};
-            attr.id = ACL_RT_LAUNCH_KERNEL_ATTR_DYN_UBUF_SIZE;
-            attr.value.dynUBufSize = localMemorySize;
+            // The LOCAL_MEMORY_SIZE aliases work in both CANN 9.0 beta.1 and 9.0.0.
+            attr.id = ACL_RT_LAUNCH_KERNEL_ATTR_LOCAL_MEMORY_SIZE;
+            attr.value.localMemorySize = localMemorySize;
             aclrtLaunchKernelCfg cfg {&attr, 1};
             ACL_CHECK(aclrtLaunchKernelV2(static_cast<aclrtFuncHandle>(stubFunc), static_cast<uint32_t>(blockDim),
                                           args, sizeof(args), &cfg, static_cast<aclrtStream>(stream)));

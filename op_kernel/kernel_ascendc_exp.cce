@@ -1,4 +1,5 @@
 #include "kernel_operator.h"
+#include "simt_api/math_functions.h"
 
 #ifdef __CCE_KT_TEST__
 #define __aicore__
@@ -12,6 +13,11 @@
 
 using namespace AscendC;
 
+// MB_KERNEL foo_add
+// MB_TENSOR output A fp32 TOTAL_COUNT
+// MB_TENSOR input B fp32 TOTAL_COUNT
+// MB_TENSOR input C fp32 TOTAL_COUNT
+
 // CCE source using the AscendC SIMT wrapper.
 // Default ABI: foo_add(A, B, C), where A is output and B/C are inputs.
 __simt_vf__ __aicore__ LAUNCH_BOUND(256) inline
@@ -19,7 +25,7 @@ void callee(__gm__ float *A, __gm__ float *B, __gm__ float *C)
 {
     for (int tid = static_cast<int>(Simt::GetThreadIdx()); tid < TOTAL_COUNT;
          tid += static_cast<int>(Simt::GetThreadNum())) {
-        A[tid] = __expf(B[tid]) * C[tid];
+        A[tid] = expf(B[tid]) * C[tid];
     }
 }
 
