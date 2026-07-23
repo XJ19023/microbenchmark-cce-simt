@@ -1,0 +1,24 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+// A = B + C, fp32[256]. Each SIMT thread processes one element.
+// MB_KERNEL add_simt
+// MB_TENSOR output A fp32 256
+// MB_TENSOR input B fp32 256
+// MB_TENSOR input C fp32 256
+
+__simt_vf__ __aicore__ LAUNCH_BOUND(256) inline
+void add_simt_vf(__gm__ float* A, __gm__ float* B, __gm__ float* C)
+{
+    const int tid = __cce_simt_get_TID_X();
+    A[tid] = B[tid] + C[tid];
+}
+
+extern "C" __global__ __aicore__
+void add_simt(__gm__ float* A, __gm__ float* B, __gm__ float* C)
+{
+    cce::async_invoke<add_simt_vf>(cce::dim3{256, 1, 1}, A, B, C);
+}

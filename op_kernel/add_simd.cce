@@ -1,0 +1,48 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+// A = B + C, fp32[256]. Data is moved GM -> UB -> SIMD VF -> GM.
+// MB_KERNEL add_simd
+// MB_TENSOR output A fp32 256
+// MB_TENSOR input B fp32 256
+// MB_TENSOR input C fp32 256
+
+extern "C" __global__ __aicore__
+void add_simd(__gm__ float* A, __gm__ float* B, __gm__ float* C)
+{
+    constexpr uint32_t elementCount = 256;
+    constexpr uint32_t dataBytes = elementCount * sizeof(float);
+    constexpr uint16_t vectorBlocks = elementCount / 64;
+
+    __ubuf__ float* ubB = (__ubuf__ float*)get_imm(0x0000);
+    __ubuf__ float* ubC = (__ubuf__ float*)get_imm(0x1000);
+    __ubuf__ float* ubA = (__ubuf__ float*)get_imm(0x2000);
+
+    copy_gm_to_ubuf_align_v2(ubB, B, 0, 1, dataBytes, 0, 0, 0, 0, 0, 0);
+    copy_gm_to_ubuf_align_v2(ubC, C, 0, 1, dataBytes, 0, 0, 0, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+    wait_flag(PIPE_MTE2, PIPE_V, (event_t)0);
+
+    __VEC_SCOPE__ {
+        vector_bool mask = pset_b32(PAT_ALL);
+        vector_f32 vecB;
+        vector_f32 vecC;
+        vector_f32 vecA;
+
+        #pragma unroll(1)
+        for (uint16_t block = 0; block < vectorBlocks; ++block) {
+            const uint16_t offset = block * 64;
+            vlds(vecB, ubB, offset, NORM);
+            vlds(vecC, ubC, offset, NORM);
+            vadd(vecA, vecB, vecC, mask);
+            vsts(vecA, ubA, offset, NORM_B32, mask);
+        }
+    }
+
+    pipe_barrier(PIPE_ALL);
+    copy_ubuf_to_gm_align_v2(A, ubA, 0, 1, dataBytes, 0, 0, 0);
+    pipe_barrier(PIPE_ALL);
+}
