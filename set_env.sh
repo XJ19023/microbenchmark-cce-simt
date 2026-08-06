@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source this file before running python3 run_test.py on this machine.
 
-export CANN_HOME="${CANN_HOME:-/home/lenovo/.codex/memories/cann-9.0.0/cann-9.0.0}"
+export CANN_HOME="${CANN_HOME:-/home/lbxj/Ascend/cann-9.1.0}"
 export ARCH="${ARCH:-x86_64-linux}"
 export SOC_VERSION="${SOC_VERSION:-Ascend950PR_9599}"
 export NPU_TYPE="${NPU_TYPE:-$SOC_VERSION}"

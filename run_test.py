@@ -87,7 +87,7 @@ def default_cann_home() -> str:
     env = os.environ.get("CANN_HOME")
     if env:
         return env
-    local = Path("/home/lenovo/.codex/memories/cann-9.0.0/cann-9.0.0")
+    local = Path("/home/lbxj/Ascend/cann-9.1.0")
     if local.exists():
         return str(local)
     return ""
